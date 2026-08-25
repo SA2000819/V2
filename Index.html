@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tactical Mesh Terminal</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="chat-app">
+
+    <header class="chat-header">
+        <div class="node-info">
+            <div class="status-dot" id="statusDot"></div>
+            <div>
+                <h2 id="skylancer">Skylancers Vyomsutra</h2>
+                <h3 id="nodeTitle">Tactical Radio Node</h3>
+                <span id="statusText">Disconnected</span>
+            </div>
+        </div>
+        <div class="header-controls">
+            <!-- Node name badge -->
+            <div class="node-name-badge" id="nodeNameBadge" title="Your node ID">
+                <span class="node-name-badge-dot"></span><span id="nodeNameBadgeText">NO ID</span>
+            </div>
+            <!-- Day / Night toggle -->
+            <label class="dn-toggle" title="Toggle Day / Night mode">
+                <input type="checkbox" id="dayNightToggle" onchange="toggleDayNight()">
+                <span class="dn-toggle-track">
+                    <span class="dn-toggle-thumb"></span>
+                    <span class="dn-icon dn-icon-moon">🌙</span>
+                    <span class="dn-icon dn-icon-sun">☀️</span>
+                </span>
+            </label>
+            <select id="transportSelect" title="Choose link: USB Serial → WiFi → Bluetooth">
+                <option value="serial">USB Serial</option>
+                <option value="wifi">WiFi (AP)</option>
+                <option value="ble">Bluetooth</option>
+            </select>
+            <button id="connectBtn" onclick="connectTransport()">Connect</button>
+        </div>
+    </header>
+
+    <div class="node-id-banner" id="nodeIdBanner" style="display:none;">
+        <span class="node-id-label">YOUR CODE ID</span>
+        <span class="node-id-value" id="nodeIdValue">----</span>
+    </div>
+
+    <!-- ── Map panel (Covers primary layout) ── -->
+    <div class="map-panel">
+        <div id="map"></div>
+
+        <!-- North arrow -->
+        <div class="north-arrow" id="northArrow" title="North">
+            <svg viewBox="0 0 40 60" width="20" height="30">
+                <polygon points="20,2 30,40 20,32 10,40" fill="#ea4335" stroke="#fff" stroke-width="1"/>
+                <polygon points="20,32 30,40 20,58 10,40" fill="#e9edef" stroke="#fff" stroke-width="1"/>
+                <text x="20" y="12" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">N</text>
+            </svg>
+        </div>
+
+        <!-- Offline map preload -->
+        <button class="offline-toggle" id="offlineToggleBtn" onclick="openOfflinePanel()" title="Use or save offline map tiles">
+            ⬇ Offline
+        </button>
+
+        <!-- Enemy contact report -->
+        <button class="enemy-toggle" id="enemyToggleBtn" onclick="openEnemyPanel()" title="Report an enemy contact">
+            🔴 Report
+        </button>
+
+        <!-- Floating Chat Trigger Toggle Button -->
+        <button class="chat-toggle-btn" id="chatToggleBtn" onclick="toggleChatDrawer()" title="Toggle Messaging Panel">
+            💬 Texting Panel
+            <span class="unread-badge" id="unreadBadge" style="display: none;">0</span>
+        </button>
+
+        <div class="offline-panel" id="offlinePanel">
+            <div class="offline-panel-header">
+                <div class="offline-panel-title">Offline Map Tiles</div>
+                <span id="mapSourceBadge" class="map-source-badge">Source: Online</span>
+            </div>
+
+            <div class="offline-panel-section">
+                <div class="offline-panel-subtitle">📁 Local Tiles Folder</div>
+                <p class="offline-panel-desc">
+                    Point the app at a folder of tiles prepared on a PC with the included
+                    <code>download_tiles.py</code> script.
+                </p>
+                <div class="offline-panel-row">
+                    <button onclick="chooseTilesFolder()" id="chooseFolderBtn">Choose Folder</button>
+                    <span id="folderStatusText" class="offline-status-text">No folder selected</span>
+                </div>
+                <div class="offline-panel-row">
+                    <select id="localPackSelect"><option value="">— select a pack —</option></select>
+                    <button onclick="loadSelectedPack()">Load</button>
+                </div>
+                <div class="offline-panel-row">
+                    <button class="offline-secondary" onclick="switchToOnlineTiles()">Use Online Map Instead</button>
+                </div>
+                <p class="offline-panel-note" id="fsApiNote"></p>
+            </div>
+
+            <div class="offline-panel-section">
+                <div class="offline-panel-subtitle">⚡ Quick Browser Cache</div>
+                <p class="offline-panel-desc">
+                    Caches tiles for the current view straight from this device while online.
+                </p>
+                <div class="offline-panel-row">
+                    <label for="offlineZoomMin">Zoom</label>
+                    <select id="offlineZoomMin"></select>
+                    <span>to</span>
+                    <select id="offlineZoomMax"></select>
+                </div>
+                <div class="offline-progress-wrap" id="offlineProgressWrap" style="display:none;">
+                    <div class="offline-progress-bar"><div class="offline-progress-fill" id="offlineProgressFill"></div></div>
+                    <span id="offlineProgressText">0 / 0 tiles</span>
+                </div>
+                <div class="offline-panel-row">
+                    <button onclick="startOfflineDownload()">Cache This View</button>
+                    <span id="offlineCacheCount">— tiles cached</span>
+                    <button class="offline-link-btn" onclick="clearOfflineCache()">Clear</button>
+                </div>
+            </div>
+
+            <div class="offline-panel-row offline-panel-actions">
+                <button class="offline-secondary" onclick="closeOfflinePanel()">Close</button>
+            </div>
+        </div>
+
+        <!-- Enemy contact report panel -->
+        <div class="offline-panel enemy-panel" id="enemyPanel">
+            <div class="offline-panel-header">
+                <div class="offline-panel-title enemy-panel-title">🔴 Report Enemy Contact</div>
+            </div>
+
+            <div class="offline-panel-row">
+                <input type="text" id="enemyName" class="enemy-input" placeholder="Enemy / contact name">
+            </div>
+
+            <div class="enemy-method-tabs">
+                <button type="button" class="enemy-method-btn active" data-method="bearing" onclick="setEnemyMethod('bearing')">Bearing &amp; Range</button>
+                <button type="button" class="enemy-method-btn" data-method="grid" onclick="setEnemyMethod('grid')">Grid Ref</button>
+                <button type="button" class="enemy-method-btn" data-method="latlong" onclick="setEnemyMethod('latlong')">Lat / Long</button>
+            </div>
+
+            <div class="enemy-method-fields" id="methodBearing">
+                <div class="offline-panel-row">
+                    <input type="number" id="enemyBearing" class="enemy-input" placeholder="Bearing (0–360°)" min="0" max="360">
+                    <input type="number" id="enemyRange" class="enemy-input" placeholder="Range (m)" min="0">
+                </div>
+                <p class="offline-panel-note">Calculated from your last known GPS position.</p>
+            </div>
+
+            <div class="enemy-method-fields" id="methodGrid" style="display:none;">
+                <div class="offline-panel-row">
+                    <input type="text" id="enemyZone" class="enemy-input enemy-input-narrow" placeholder="Zone e.g. 43R">
+                    <input type="number" id="enemyEasting" class="enemy-input" placeholder="Easting (m)">
+                    <input type="number" id="enemyNorthing" class="enemy-input" placeholder="Northing (m)">
+                </div>
+            </div>
+
+            <div class="enemy-method-fields" id="methodLatLong" style="display:none;">
+                <div class="offline-panel-row">
+                    <input type="number" id="enemyLat" class="enemy-input" placeholder="Latitude" step="0.00001">
+                    <input type="number" id="enemyLon" class="enemy-input" placeholder="Longitude" step="0.00001">
+                </div>
+            </div>
+
+            <div class="offline-panel-row offline-panel-actions">
+                <button class="enemy-submit-btn" onclick="submitEnemyReport()">🔴 Transmit</button>
+                <button class="offline-secondary" onclick="closeEnemyPanel()">Cancel</button>
+            </div>
+        </div>
+
+        <div class="map-overlay-legend" id="mapLegend">
+            <span class="legend-dot self"></span><span>You</span>
+            <span class="legend-dot peer"></span><span>Node</span>
+            <span class="legend-dot stale"></span><span>Stale</span>
+            <span class="legend-dot landmark"></span><span>Landmark</span>
+            <span class="legend-dot enemy"></span><span>Enemy</span>
+        </div>
+        <div class="map-node-count" id="mapNodeCount">0 nodes</div>
+        <div class="map-hint">Double-click map to drop a tac landmark</div>
+    </div>
+
+    <!-- ── Sliding Drawer Text Messaging Panel ── -->
+    <div class="chat-drawer" id="chatDrawer">
+        <div class="drawer-header">
+            <span>Text Messaging</span>
+            <button class="close-drawer-btn" onclick="toggleChatDrawer()">✖</button>
+        </div>
+
+        <main class="chat-window" id="chatWindow">
+            <div class="system-message">
+                <span>--- System Offline. Click Connect to Scan ---</span>
+            </div>
+        </main>
+
+        <footer class="chat-input-area">
+            <input type="text" id="targetId" placeholder="Target" maxlength="4" disabled>
+            <div class="input-wrapper">
+                <input type="text" id="messageInput" placeholder="Type a message..." disabled>
+            </div>
+            <button id="sendBtn" onclick="sendMessage()" disabled>
+                <svg viewBox="0 0 24 24" width="24" height="24">
+                    <path fill="currentColor" d="M2,21L23,12L2,3V10L17,12L2,14V21Z" />
+                </svg>
+            </button>
+        </footer>
+    </div>
+</div>
+
+<!-- Leaflet JS -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
