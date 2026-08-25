@@ -26,10 +26,6 @@ let serialReadLoopActive = false;
 // ─── Write queue — prevents concurrent writes on any transport from dropping ──
 let writeQueue = Promise.resolve();
 
-// transportWrite() replaces the old bleWrite(): same call sites, but it
-// dispatches to whichever transport (BLE / WiFi WebSocket / USB Serial) is
-// currently active, so sendMessage(), sendGPSBeacon() etc. don't need to care.
-
 // Unread message tracking state
 let unreadCount = 0;
 let isChatOpen = false;
@@ -112,17 +108,11 @@ const dayNightToggle    = document.getElementById('dayNightToggle');
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8');
 
-// ─── Grid Reference (UTM / Indian UGRS) — point 1 ──────────────────────────
-// India's Survey of India adopted a UTM/WGS84-based "Universal Grid Reference
-// System" (UGRS) for defence & topo mapping, replacing the older Everest/
-// Polyconic grid. India spans UTM zones 42N–47N. The functions below project
-// to/from that same UTM system, so the GR shown matches Indian UGRS sheets.
-// Converts WGS84 lat/lon to a UTM-style military grid reference:
-// "<zone><band> <easting>mE <northing>mN"
+// ─── Grid Reference (UTM / Indian UGRS) ──────────────────────────────────────
 function latLonToUTM(lat, lon, forceZone) {
-    const a  = 6378137.0;                 // WGS84 semi-major axis (m)
-    const f  = 1 / 298.257223563;         // WGS84 flattening
-    const k0 = 0.9996;                    // UTM scale factor
+    const a  = 6378137.0;
+    const f  = 1 / 298.257223563;
+    const k0 = 0.9996;
     const e2 = f * (2 - f);
     const e4 = e2 * e2;
     const e6 = e4 * e2;
@@ -133,7 +123,6 @@ function latLonToUTM(lat, lon, forceZone) {
 
     let zone = forceZone || (Math.floor((lon + 180) / 6) + 1);
     if (!forceZone) {
-        // Norway / Svalbard zone exceptions
         if (lat >= 56 && lat < 64 && lon >= 3 && lon < 12) zone = 32;
         if (lat >= 72 && lat < 84) {
             if (lon >= 0 && lon < 9)       zone = 31;
@@ -174,7 +163,7 @@ function latLonToUTM(lat, lon, forceZone) {
         )
     );
 
-    if (lat < 0) northing += 10000000; // southern hemisphere offset
+    if (lat < 0) northing += 10000000;
 
     const bandLetters = "CDEFGHJKLMNPQRSTUVWX";
     let band = 'Z';
@@ -190,8 +179,6 @@ function latLonToUTM(lat, lon, forceZone) {
     };
 }
 
-// Inverse projection: UTM easting/northing back to WGS84 lat/lon.
-// Needed to draw true grid lines (they curve slightly in lat/lon space).
 function utmToLatLon(zone, easting, northing, hemisphere) {
     const a  = 6378137.0;
     const f  = 1 / 298.257223563;
@@ -254,33 +241,29 @@ let map        = null;
 let selfMarker = null;
 const nodeMarkers = {};   // { nodeId: { marker, lat, lon, lastSeen } }
 
-// ─── Tac landmarks — point 4 ───────────────────────────────────────────────
-const landmarkMarkers = {}; // { id: marker }
-let landmarks = [];         // [{ id, lat, lon, label }]
+// ─── Tac landmarks ─────────────────────────────────────────────────────────
+const landmarkMarkers = {};
+let landmarks = [];
 try {
     landmarks = JSON.parse(localStorage.getItem('tacLandmarks') || '[]');
 } catch (e) { landmarks = []; }
 
-// ─── UTM grid overlay — grid lines + easting/northing labels ──────────────
+// ─── UTM grid overlay ──────────────────────────────────────────────────────
 let gridLinesLayer  = null;
 let gridLabelsLayer = null;
 let gridRedrawTimer = null;
 
-const HISAR_CENTER = [29.1492, 75.7217];   // Hisar, Haryana — default center
-const STALE_THRESHOLD_MS = 5 * 60 * 1000;  // 5 minutes
+const HISAR_CENTER = [29.1492, 75.7217];
+const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 // ─── Phone GPS state ──────────────────────────────────────────────────────────
 let gpsWatchId     = null;
 let lastBeaconSent = 0;
-const BEACON_INTERVAL_MS = 30000; // throttle outgoing GPS beacons to 30s
+const BEACON_INTERVAL_MS = 30000;
 
-// A 1x1 transparent PNG used when a locally-requested tile simply doesn't exist yet.
 const BLANK_TILE_DATA_URL =
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
-// Custom Leaflet tile layer that reads real tile PNG files from a local
-// FileSystemDirectoryHandle (a folder picked via the File System Access API),
-// instead of fetching from a URL. Used for the "Local Tiles Folder" feature.
 const LocalFolderTileLayer = L.TileLayer.extend({
     initialize: function (dirHandle, options) {
         this._dirHandle = dirHandle;
@@ -305,15 +288,15 @@ const LocalFolderTileLayer = L.TileLayer.extend({
             const file = await fileHandle.getFile();
             return URL.createObjectURL(file);
         } catch (e) {
-            return null; // tile not downloaded for this area/zoom — falls back to blank
+            return null;
         }
     }
 });
 
-let onlineTileLayer  = null;  // the normal internet contour layer
-let currentBaseLayer = null;  // whichever layer is actively mounted (online or local)
-let rootDirHandle     = null; // FileSystemDirectoryHandle for the chosen tiles root folder
-let activePackHandle  = null; // FileSystemDirectoryHandle for the currently loaded pack
+let onlineTileLayer  = null;
+let currentBaseLayer = null;
+let rootDirHandle     = null;
+let activePackHandle  = null;
 
 // ─── Map setup ────────────────────────────────────────────────────────────────
 function initMap() {
@@ -324,10 +307,6 @@ function initMap() {
         attributionControl: true,
     });
 
-    // Contour map is the default base layer. OpenTopoMap carries elevation
-    // contour lines + terrain shading; its appearance is re-tinted for night
-    // mode via a CSS filter (see toggleDayNight). Can be swapped at runtime
-    // for a local tiles folder — see chooseTilesFolder()/loadSelectedPack().
     onlineTileLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
         subdomains: 'abc',
         minZoom: 10,
@@ -340,10 +319,9 @@ function initMap() {
     gridLinesLayer  = L.layerGroup().addTo(map);
     gridLabelsLayer = L.layerGroup().addTo(map);
 
-    // Tac landmarks (point 4): double-click / double-tap the map to drop a marker
     map.on('dblclick', e => {
         const label = window.prompt('Landmark label:', '');
-        if (label === null) return; // cancelled
+        if (label === null) return;
         addLandmark(e.latlng.lat, e.latlng.lng, label.trim() || 'LANDMARK');
     });
 
@@ -361,9 +339,6 @@ function scheduleGridRedraw() {
     gridRedrawTimer = setTimeout(drawUTMGrid, 120);
 }
 
-// Draws an Indian UGRS / UTM grid over the currently visible map area, with
-// easting (vertical lines) and northing (horizontal lines) labelled in the
-// standard truncated-digit convention used on Survey of India grid sheets.
 function drawUTMGrid() {
     if (!map || !gridLinesLayer) return;
     gridLinesLayer.clearLayers();
@@ -396,7 +371,6 @@ function drawUTMGrid() {
     let minN = Math.min(...northings)  - spacing;
     let maxN = Math.max(...northings)  + spacing;
 
-    // Safety cap so a fast zoom-out never spawns hundreds of lines at once
     while ((maxE - minE) / spacing > 24) spacing *= 2;
 
     const startE = Math.floor(minE / spacing) * spacing;
@@ -407,7 +381,6 @@ function drawUTMGrid() {
     const gridLabel = v => String(Math.round(v / spacing) % 100).padStart(2, '0');
     const SAMPLES = 6;
 
-    // Vertical lines — constant easting
     for (let e = startE; e <= endE; e += spacing) {
         const pts = [];
         for (let i = 0; i <= SAMPLES; i++) {
@@ -423,7 +396,6 @@ function drawUTMGrid() {
         }).addTo(gridLabelsLayer);
     }
 
-    // Horizontal lines — constant northing
     for (let n = startN; n <= endN; n += spacing) {
         const pts = [];
         for (let i = 0; i <= SAMPLES; i++) {
@@ -461,7 +433,7 @@ function persistLandmarks() {
 }
 
 function renderLandmark(lm) {
-    const marker = L.marker([lm.lat, lm.lon], { icon: makeIcon('node-marker-landmark') })
+    const marker = L.marker([lm.lat, lm.lon], { icon: getNodeIcon('landmark') })
         .bindTooltip(nodeTooltipHtml(lm.label, lm.lat, lm.lon), { permanent: true, direction: 'top', offset: [0, -6], className: 'node-name-tooltip' })
         .bindPopup(`
             <div class="popup-node-id">${lm.label}</div>
@@ -474,18 +446,11 @@ function renderLandmark(lm) {
 }
 
 // ─── Enemy contact reporting ────────────────────────────────────────────────
-// Report an enemy by bearing & range, grid reference, or lat/long. Plots a
-// dark-red marker locally and transmits it over the mesh so every other
-// device plots the same contact — mirrors the existing GPSPOS→BEACON pattern:
-// this node sends "ENEMYSPOT:...", the firmware relays it to the mesh as
-// "ENEMY:...", which handleIncomingData() picks up on every receiving device.
-
 const enemyMarkers = {};
 let enemyMethod = 'bearing';
 
-// Great-circle destination point given a start point, bearing (deg) and range (m).
 function destinationPoint(lat, lon, bearingDeg, distanceMeters) {
-    const R = 6371000; // mean Earth radius, m
+    const R = 6371000;
     const brng = bearingDeg * Math.PI / 180;
     const lat1 = lat * Math.PI / 180;
     const lon1 = lon * Math.PI / 180;
@@ -502,7 +467,6 @@ function destinationPoint(lat, lon, bearingDeg, distanceMeters) {
     return [lat2 * 180 / Math.PI, ((lon2 * 180 / Math.PI) + 540) % 360 - 180];
 }
 
-// MGRS/UTM band letters C–M are south of the equator, N–X are north.
 function bandHemisphere(band) {
     const bandLetters = "CDEFGHJKLMNPQRSTUVWX";
     const idx = bandLetters.indexOf(band.toUpperCase());
@@ -575,7 +539,6 @@ function submitEnemyReport() {
     transmitEnemyReport(name, lat, lon);
     closeEnemyPanel();
 
-    // Clear the form for next time
     document.getElementById('enemyName').value = '';
     document.getElementById('enemyBearing').value = '';
     document.getElementById('enemyRange').value = '';
@@ -588,7 +551,7 @@ function submitEnemyReport() {
 
 function plotEnemyMarker(name, lat, lon, ts) {
     const id = 'en_' + ts + '_' + Math.random().toString(36).slice(2, 6);
-    const marker = L.marker([lat, lon], { icon: makeIcon('node-marker-enemy'), zIndexOffset: 900 })
+    const marker = L.marker([lat, lon], { icon: getNodeIcon('enemy'), zIndexOffset: 900 })
         .bindTooltip(nodeTooltipHtml(name, lat, lon), { permanent: true, direction: 'top', offset: [0, -8], className: 'node-name-tooltip enemy-tooltip' })
         .bindPopup(`
             <div class="popup-node-id" style="color:var(--node-enemy);">⚠ ${name}</div>
@@ -609,7 +572,6 @@ function transmitEnemyReport(name, lat, lon) {
 }
 
 // ─── Offline map preload ────────────────────────────────────────────────────
-// Must match TILE_CACHE_NAME in sw.js exactly.
 const TILE_CACHE_NAME = 'mesh-tile-cache-v1';
 let offlineDownloading = false;
 let offlineDownloadCancelled = false;
@@ -624,7 +586,6 @@ function registerServiceWorker() {
         .catch(err => insertAlert('SYSTEM: Offline caching unavailable — ' + err.message));
 }
 
-// Standard slippy-map (Web Mercator) tile math
 function lon2tileX(lon, z) {
     return Math.floor((lon + 180) / 360 * Math.pow(2, z));
 }
@@ -634,8 +595,6 @@ function lat2tileY(lat, z) {
 }
 
 function buildTileUrl(z, x, y) {
-    // Same subdomain-selection formula Leaflet itself uses, so cached tiles
-    // are found under the exact URL Leaflet will request later.
     const subdomains = ['a', 'b', 'c'];
     const s = subdomains[Math.abs(x + y) % subdomains.length];
     return `https://${s}.tile.opentopomap.org/${z}/${x}/${y}.png`;
@@ -660,7 +619,7 @@ function collectTileList(bounds, zMin, zMax) {
 function populateOfflineZoomOptions() {
     const minSel = document.getElementById('offlineZoomMin');
     const maxSel = document.getElementById('offlineZoomMax');
-    if (!minSel || minSel.options.length) return; // already populated
+    if (!minSel || minSel.options.length) return;
     for (let z = 10; z <= 17; z++) {
         minSel.add(new Option(z, z));
         maxSel.add(new Option(z, z));
@@ -691,7 +650,7 @@ async function startOfflineDownload() {
         return;
     }
 
-    const bounds = map.getBounds().pad(0.3); // small margin so nearby panning still works offline
+    const bounds = map.getBounds().pad(0.3);
     const tiles = collectTileList(bounds, zMin, zMax);
 
     if (tiles.length > 1200) {
@@ -770,11 +729,7 @@ async function clearOfflineCache() {
     updateCacheCountDisplay();
 }
 
-// ─── Local tiles folder (real files via File System Access API) ───────────
-// Tiles for this are prepared ahead of time on a PC with download_tiles.py
-// (included alongside this app), since the OpenTopoMap tile servers don't
-// send CORS headers and so their raw bytes can't be saved from the browser.
-
+// ─── Local tiles folder ───────────────────────────────────────────
 const HANDLE_DB_NAME  = 'tacMeshHandles';
 const HANDLE_STORE    = 'handles';
 
@@ -796,7 +751,7 @@ async function saveRootDirHandle(handle) {
             tx.oncomplete = resolve;
             tx.onerror = () => reject(tx.error);
         });
-    } catch (e) { /* IndexedDB structured-clone of handles needs a modern Chromium build */ }
+    } catch (e) {}
 }
 
 async function loadRootDirHandle() {
@@ -849,7 +804,7 @@ async function restoreTilesFolder() {
         } else {
             if (noteEl) noteEl.textContent = `Previously used "${saved.name}" — tap Choose Folder to reconnect.`;
         }
-    } catch (e) { /* handle no longer valid (folder moved/deleted) — ignore */ }
+    } catch (e) {}
 }
 
 async function refreshPackList() {
@@ -893,7 +848,7 @@ function switchToOnlineTiles() {
     insertAlert('SYSTEM: Switched to online contour map.');
 }
 
-// ─── Day / Night mode — point 6 (now also re-tints the map tiles) ─────────
+// ─── Day / Night mode ────────────────────────────────────────────────────────
 function toggleDayNight() {
     const day = dayNightToggle.checked;
     document.body.classList.toggle('day-mode', day);
@@ -907,14 +862,16 @@ function restoreDayNightPref() {
     document.body.classList.toggle('day-mode', day);
 }
 
-function makeIcon(className) {
-    const big = className.includes('self') || className.includes('landmark') || className.includes('enemy');
-    const size = big ? [14, 14] : [12, 12];
+/**
+ * Creates color-coded map icons for Leaflet using custom-dot-icon CSS class
+ * @param {'self'|'peer'|'stale'|'landmark'|'enemy'} type 
+ */
+function getNodeIcon(type) {
     return L.divIcon({
-        className: className,
-        iconSize: size,
-        iconAnchor: [size[0] / 2, size[1] / 2],
-        popupAnchor: [0, -10]
+        className: 'custom-dot-icon',
+        html: `<div class="marker-pin ${type}"></div>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7]
     });
 }
 
@@ -934,8 +891,6 @@ function popupHtml(nodeId, lat, lon, lastSeen) {
     `;
 }
 
-// Builds the always-visible two-line map label used on node/enemy tooltips:
-// the name on top, its Indian UGRS grid reference underneath.
 function nodeTooltipHtml(label, lat, lon) {
     return `<div class="tooltip-name">${label}</div><div class="tooltip-gr">${formatGridRef(lat, lon)}</div>`;
 }
@@ -946,12 +901,13 @@ function updateNodeOnMap(nodeId, lat, lon) {
 
     if (isSelf) {
         if (!selfMarker) {
-            selfMarker = L.marker([lat, lon], { icon: makeIcon('node-marker-self'), zIndexOffset: 1000 })
+            selfMarker = L.marker([lat, lon], { icon: getNodeIcon('self'), zIndexOffset: 1000 })
                 .bindPopup(popupHtml(nodeId + ' (You)', lat, lon, now))
                 .bindTooltip(nodeTooltipHtml(nodeId, lat, lon), { permanent: true, direction: 'top', offset: [0, -8], className: 'node-name-tooltip' })
                 .addTo(map);
         } else {
             selfMarker.setLatLng([lat, lon]);
+            selfMarker.setIcon(getNodeIcon('self'));
             selfMarker.setPopupContent(popupHtml(nodeId + ' (You)', lat, lon, now));
             selfMarker.setTooltipContent(nodeTooltipHtml(nodeId, lat, lon));
         }
@@ -959,15 +915,15 @@ function updateNodeOnMap(nodeId, lat, lon) {
 
     } else {
         if (!nodeMarkers[nodeId]) {
-            const marker = L.marker([lat, lon], { icon: makeIcon('node-marker-peer') })
+            const marker = L.marker([lat, lon], { icon: getNodeIcon('peer') })
                 .bindPopup(popupHtml(nodeId, lat, lon, now))
                 .bindTooltip(nodeTooltipHtml(nodeId, lat, lon), { permanent: true, direction: 'top', offset: [0, -7], className: 'node-name-tooltip' })
                 .addTo(map);
             nodeMarkers[nodeId] = { marker, lat, lon, lastSeen: now };
         } else {
             nodeMarkers[nodeId].marker.setLatLng([lat, lon]);
-            nodeMarkers[nodeId].marker.setIcon(makeIcon('node-marker-peer'));
-            nodeMarkers[nodeId].marker.setTooltipContent(nodeTooltipHtml(nodeId, lat, lon)); // fresh data — no longer stale
+            nodeMarkers[nodeId].marker.setIcon(getNodeIcon('peer'));
+            nodeMarkers[nodeId].marker.setTooltipContent(nodeTooltipHtml(nodeId, lat, lon));
             nodeMarkers[nodeId].marker.setPopupContent(popupHtml(nodeId, lat, lon, now));
             nodeMarkers[nodeId].lat = lat;
             nodeMarkers[nodeId].lon = lon;
@@ -982,7 +938,7 @@ function refreshStaleMarkers() {
     const now = Date.now();
     for (const [nodeId, info] of Object.entries(nodeMarkers)) {
         const stale = (now - info.lastSeen) > STALE_THRESHOLD_MS;
-        info.marker.setIcon(makeIcon(stale ? 'node-marker-stale' : 'node-marker-peer'));
+        info.marker.setIcon(getNodeIcon(stale ? 'stale' : 'peer'));
         info.marker.setTooltipContent(nodeTooltipHtml(stale ? `${nodeId} · STALE` : nodeId, info.lat, info.lon));
         info.marker.setPopupContent(popupHtml(nodeId, info.lat, info.lon, info.lastSeen));
     }
@@ -1076,11 +1032,6 @@ function setConnected(online) {
     connectBtn.innerText  = online ? 'Online' : 'Connect';
 }
 
-// ─── Transport picker ─────────────────────────────────────────────────────────
-// Order of preference when jamming is a concern: USB Serial (wired, immune to
-// RF jamming) → WiFi AP/WebSocket (2.4GHz, but a separate band/protocol from
-// BLE and often still usable) → Bluetooth (most jammer-susceptible, last resort).
-// The transportSelect UI element just sets which connect function Connect runs.
 function getSelectedTransport() {
     const el = document.getElementById('transportSelect');
     return el ? el.value : 'ble';
@@ -1094,7 +1045,6 @@ async function connectTransport() {
 }
 
 function disconnectAllTransports() {
-    // Tear down whichever transport was previously active before switching.
     if (activeTransport === 'ble' && bluetoothDevice?.gatt?.connected) {
         bluetoothDevice.gatt.disconnect();
     }
@@ -1112,7 +1062,7 @@ function disconnectAllTransports() {
     activeTransport = null;
 }
 
-// ─── USB Serial Connect (Chrome/Edge desktop only — Web Serial API) ──────────
+// ─── USB Serial Connect ───────────────────────────────────────────────────────
 async function connectSerial() {
     if (!('serial' in navigator)) {
         insertAlert('SYSTEM ERROR: Web Serial not supported in this browser. Use Chrome on desktop.');
@@ -1162,9 +1112,7 @@ async function connectSerial() {
     }
 }
 
-// ─── WiFi (ESP32 SoftAP + WebSocket) Connect ─────────────────────────────────
-// Join the node's WiFi network first (its own Access Point, e.g. "VyomsutraV1-Net"),
-// same way you'd join any WiFi network on the phone/laptop — then click Connect here.
+// ─── WiFi Connect ─────────────────────────────────────────────────────────────
 async function connectWiFi() {
     try {
         disconnectAllTransports();
@@ -1229,9 +1177,7 @@ async function connectBluetooth() {
         setConnected(true);
         insertAlert('SYSTEM: Secure Radio Link Established.');
 
-        // Send PING immediately — the firmware replies the moment it receives the write.
         await transportWrite('PING');
-        // Start phone GPS shortly after — gives the PING response time to set selfNodeId
         setTimeout(startPhoneGPS, 1000);
 
     } catch (err) {
@@ -1240,15 +1186,9 @@ async function connectBluetooth() {
 }
 
 // ─── Incoming data handler ────────────────────────────────────────────────────
-// Shared parser for a single decoded protocol line, regardless of which
-// transport it arrived over. BLE/WiFi deliver raw lines as-is; Serial lines
-// come back prefixed "APP:" by the firmware (to separate them from human
-// debug logging also flowing over the same port) and that prefix is stripped
-// by processSerialChunk() before this function ever sees it.
 function processIncomingLine(raw) {
     if (!raw) return;
 
-    // 1. Node ID response from PING
     if (raw.startsWith('INFO:Your Node ID is ')) {
         const id = raw.slice('INFO:Your Node ID is '.length);
         selfNodeId = id;
@@ -1261,7 +1201,6 @@ function processIncomingLine(raw) {
         return;
     }
 
-    // 2. GPS beacon relayed from another node: "BEACON:ALPH,29.149200,75.721700"
     if (raw.startsWith('BEACON:')) {
         const parts = raw.slice('BEACON:'.length).split(',');
         if (parts.length === 3) {
@@ -1276,7 +1215,6 @@ function processIncomingLine(raw) {
         return;
     }
 
-    // 3. Echo of own GPS position: "SELFPOS:29.149200,75.721700"
     if (raw.startsWith('SELFPOS:')) {
         const parts = raw.slice('SELFPOS:'.length).split(',');
         if (parts.length === 2 && selfNodeId) {
@@ -1290,7 +1228,6 @@ function processIncomingLine(raw) {
         return;
     }
 
-    // 4. Enemy contact relayed from another node: "ENEMY:Hostile Patrol|29.1500|75.7300"
     if (raw.startsWith('ENEMY:')) {
         const parts = raw.slice('ENEMY:'.length).split('|');
         if (parts.length === 3) {
@@ -1305,7 +1242,6 @@ function processIncomingLine(raw) {
         return;
     }
 
-    // 5. Chat message: "ALPH:Hello there"
     const sep = raw.indexOf(':');
     if (sep !== -1) {
         insertBubble('received', raw.slice(0, sep), raw.slice(sep + 1));
@@ -1314,19 +1250,14 @@ function processIncomingLine(raw) {
     }
 }
 
-// BLE delivers each notification as its own event with the full line.
 function handleIncomingDataBLE(event) {
     processIncomingLine(decoder.decode(event.target.value));
 }
 
-// WebSocket delivers each text frame as one message — same shape as BLE.
 function handleIncomingDataWiFi(event) {
     processIncomingLine(typeof event.data === 'string' ? event.data : '');
 }
 
-// Serial is a byte stream, not framed messages — buffer until '\n' and strip
-// the "APP:" prefix the firmware adds to distinguish protocol lines from its
-// own [TAG]-style debug logging that also shares the same port.
 let serialLineBuffer = '';
 function processSerialChunk(chunkText) {
     serialLineBuffer += chunkText;
@@ -1337,8 +1268,6 @@ function processSerialChunk(chunkText) {
         if (line.startsWith('APP:')) {
             processIncomingLine(line.slice(4));
         }
-        // lines without "APP:" are firmware debug logging — ignored here,
-        // but still visible in a system terminal if you want to watch them.
     }
 }
 
