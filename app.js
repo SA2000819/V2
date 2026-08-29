@@ -70,23 +70,25 @@ window.addEventListener('resize', () => {
 
 function transportWrite(text) {
     writeQueue = writeQueue.then(async () => {
-        try {
-            if (activeTransport === 'ble') {
-                await rxCharacteristic.writeValueWithoutResponse(encoder.encode(text));
-            } else if (activeTransport === 'wifi') {
-                if (!wsSocket || wsSocket.readyState !== WebSocket.OPEN) {
-                    throw new Error('WebSocket not open');
-                }
-                wsSocket.send(text);
-            } else if (activeTransport === 'serial') {
-                if (!serialWriter) throw new Error('Serial port not open');
-                await serialWriter.write(encoder.encode(text + '\n'));
-            } else {
-                throw new Error('No transport connected');
+        if (activeTransport === 'ble') {
+            await rxCharacteristic.writeValueWithoutResponse(encoder.encode(text));
+        } else if (activeTransport === 'wifi') {
+            if (!wsSocket || wsSocket.readyState !== WebSocket.OPEN) {
+                throw new Error('WebSocket not open');
             }
-        } catch (e) {
-            console.error(`${activeTransport || 'transport'} write failed:`, e);
+            wsSocket.send(text);
+        } else if (activeTransport === 'serial') {
+            if (!serialWriter) throw new Error('Serial port not open');
+            await serialWriter.write(encoder.encode(text + '\n'));
+        } else {
+            throw new Error('No transport connected');
         }
+    }).catch(e => {
+        console.error(`${activeTransport || 'transport'} write failed:`, e);
+        // Reset the queue itself to a resolved state so one failed write
+        // doesn't permanently wedge every future send behind a rejected promise.
+        writeQueue = Promise.resolve();
+        throw e; // re-throw so callers (e.g. sendMessage) know the write did NOT go out
     });
     return writeQueue;
 }
@@ -1239,6 +1241,23 @@ function processIncomingLine(raw) {
                 insertAlert(`🔴 ENEMY CONTACT reported: ${name.trim()} @ ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
             }
         }
+        return;
+    }
+
+    // Chat delivery confirmation / failure — sent by the firmware once a
+    // directed chat message's ack either arrives or the retry budget runs
+    // out. Must be handled before the generic "sender:text" fallback below,
+    // or these would misrender as a chat bubble from a sender literally
+    // named "CHATOK"/"CHATFAIL".
+    if (raw.startsWith('CHATOK:')) {
+        const node = raw.slice('CHATOK:'.length);
+        insertAlert(`✅ Delivered to ${node}`);
+        return;
+    }
+
+    if (raw.startsWith('CHATFAIL:')) {
+        const node = raw.slice('CHATFAIL:'.length);
+        insertAlert(`⚠️ Message to ${node} not delivered — no ack after retries.`);
         return;
     }
 
