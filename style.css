@@ -28,7 +28,7 @@
     --node-peer:      #0284c7;
     --node-stale:     #93c5fd;
     --node-enemy:     #dc2626;
-    --node-landmark:  #eab308;
+    --node-waypoint:  #eab308;
 }
 
 /* --- Node Color Coding Dots --- */
@@ -54,9 +54,9 @@
     background-color: var(--node-stale);
 }
 
-.legend-dot.landmark {
-    background-color: var(--node-landmark);
-    box-shadow: 0 0 4px var(--node-landmark);
+.legend-dot.waypoint {
+    background-color: var(--node-waypoint);
+    box-shadow: 0 0 4px var(--node-waypoint);
 }
 
 .legend-dot.enemy {
@@ -82,7 +82,7 @@
 .marker-pin.self     { background-color: var(--node-self); }
 .marker-pin.peer     { background-color: var(--node-peer); }
 .marker-pin.stale    { background-color: var(--node-stale); }
-.marker-pin.landmark { background-color: var(--node-landmark); }
+.marker-pin.waypoint { background-color: var(--node-waypoint); }
 .marker-pin.enemy    { background-color: var(--node-enemy); }
 
 /* --- Theme variables: DAY MODE --- */
@@ -399,10 +399,11 @@ body {
 }
 
 .offline-toggle { position: absolute; top: 10px; left: 10px; z-index: 1000; background: var(--bg-overlay); border: 1px solid var(--border-color); color: var(--text-main); padding: 4px 8px; border-radius: 4px; cursor: pointer; }
-.enemy-toggle { position: absolute; top: 42px; left: 10px; z-index: 1000; background: var(--node-enemy); color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+.waypoint-toggle { position: absolute; top: 42px; left: 10px; z-index: 1000; background: var(--accent-blue); color: #041316; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+.enemy-toggle { position: absolute; top: 74px; left: 10px; z-index: 1000; background: var(--node-enemy); color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold; }
 
 .map-overlay-legend { position: absolute; bottom: 10px; left: 10px; z-index: 1000; background: var(--bg-overlay); border: 1px solid var(--border-color); padding: 4px 8px; border-radius: 6px; font-size: 10px; color: var(--text-dim); display: flex; gap: 6px; pointer-events: none; }
-.map-node-count { position: absolute; top: 74px; left: 10px; z-index: 1000; background: var(--bg-overlay); border: 1px solid var(--border-color); padding: 2px 6px; border-radius: 4px; font-size: 10px; color: var(--text-dim); pointer-events: none; }
+.map-node-count { position: absolute; top: 106px; left: 10px; z-index: 1000; background: var(--bg-overlay); border: 1px solid var(--border-color); padding: 2px 6px; border-radius: 4px; font-size: 10px; color: var(--text-dim); pointer-events: none; }
 .map-hint { position: absolute; bottom: 10px; right: 100px; z-index: 1000; background: var(--bg-overlay); border: 1px solid var(--border-color); padding: 4px 8px; border-radius: 6px; font-size: 9px; color: var(--text-dim); pointer-events: none; }
 
 .leaflet-container { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); }
@@ -427,9 +428,23 @@ body.day-mode .leaflet-marker-pane, body.day-mode .leaflet-tooltip-pane, body.da
 .offline-panel { display: none; position: absolute; top: 10px; left: 10px; right: 10px; bottom: 10px; z-index: 1200; background: var(--bg-app); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; overflow-y: auto; }
 .offline-panel.open { display: flex; flex-direction: column; gap: 8px; }
 .offline-panel-header { display: flex; justify-content: space-between; font-weight: bold; color: var(--text-main); }
+.offline-panel-title { color: var(--text-main); }
+.enemy-panel-title { color: var(--node-enemy); }
+.waypoint-panel-title { color: var(--accent-blue); }
 .offline-panel-section { border-top: 1px solid var(--border-color); padding-top: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-dim); }
+.offline-panel-desc, .offline-panel-note { font-size: 10px; color: var(--text-dim); }
 .offline-panel-row { display: flex; gap: 6px; align-items: center; }
+.offline-panel-actions { display: flex; gap: 8px; margin-top: 4px; }
+.offline-secondary { flex: 1; background: transparent; border: 1px solid var(--border-color); color: var(--text-dim); padding: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.offline-secondary:hover { border-color: var(--text-dim); color: var(--text-main); }
+
 .enemy-method-tabs { display: flex; gap: 4px; }
 .enemy-method-btn { flex: 1; background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-dim); padding: 4px; font-size: 10px; cursor: pointer; }
 .enemy-method-btn.active { background: var(--node-enemy); color: white; }
+#waypointPanel .enemy-method-btn.active { background: var(--accent-blue); color: #041316; }
+
 .enemy-input { background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-main); padding: 6px; border-radius: 4px; flex: 1; }
+.enemy-input-narrow { flex: 0 0 76px; }
+
+.enemy-submit-btn { flex: 1; background: var(--node-enemy); color: white; border: none; padding: 8px; border-radius: 4px; font-weight: 700; font-size: 12px; cursor: pointer; }
+.waypoint-submit-btn { flex: 1; background: var(--accent-blue); color: #041316; border: none; padding: 8px; border-radius: 4px; font-weight: 700; font-size: 12px; cursor: pointer; }

@@ -68,6 +68,11 @@
             ⬇ Offline
         </button>
 
+        <!-- Waypoint broadcast -->
+        <button class="waypoint-toggle" id="waypointToggleBtn" onclick="openWaypointPanel()" title="Drop and broadcast a waypoint">
+            🔵 Waypoint
+        </button>
+
         <!-- Enemy contact report -->
         <button class="enemy-toggle" id="enemyToggleBtn" onclick="openEnemyPanel()" title="Report an enemy contact">
             🔴 Report
@@ -177,15 +182,60 @@
             </div>
         </div>
 
+        <!-- Waypoint broadcast panel -->
+        <div class="offline-panel waypoint-panel" id="waypointPanel">
+            <div class="offline-panel-header">
+                <div class="offline-panel-title waypoint-panel-title">🔵 Broadcast Waypoint</div>
+            </div>
+
+            <div class="offline-panel-row">
+                <input type="text" id="waypointName" class="enemy-input" placeholder="Waypoint label">
+            </div>
+
+            <div class="enemy-method-tabs">
+                <button type="button" class="enemy-method-btn active" data-method="bearing" onclick="setWaypointMethod('bearing')">Bearing &amp; Range</button>
+                <button type="button" class="enemy-method-btn" data-method="grid" onclick="setWaypointMethod('grid')">Grid Ref</button>
+                <button type="button" class="enemy-method-btn" data-method="latlong" onclick="setWaypointMethod('latlong')">Lat / Long</button>
+            </div>
+
+            <div class="enemy-method-fields" id="wpMethodBearing">
+                <div class="offline-panel-row">
+                    <input type="number" id="waypointBearing" class="enemy-input" placeholder="Bearing (0–360°)" min="0" max="360">
+                    <input type="number" id="waypointRange" class="enemy-input" placeholder="Range (m)" min="0">
+                </div>
+                <p class="offline-panel-note">Calculated from your last known GPS position.</p>
+            </div>
+
+            <div class="enemy-method-fields" id="wpMethodGrid" style="display:none;">
+                <div class="offline-panel-row">
+                    <input type="text" id="waypointZone" class="enemy-input enemy-input-narrow" placeholder="Zone e.g. 43R">
+                    <input type="number" id="waypointEasting" class="enemy-input" placeholder="Easting (m)">
+                    <input type="number" id="waypointNorthing" class="enemy-input" placeholder="Northing (m)">
+                </div>
+            </div>
+
+            <div class="enemy-method-fields" id="wpMethodLatLong" style="display:none;">
+                <div class="offline-panel-row">
+                    <input type="number" id="waypointLat" class="enemy-input" placeholder="Latitude" step="0.00001">
+                    <input type="number" id="waypointLon" class="enemy-input" placeholder="Longitude" step="0.00001">
+                </div>
+            </div>
+
+            <div class="offline-panel-row offline-panel-actions">
+                <button class="waypoint-submit-btn" onclick="submitWaypointReport()">🔵 Transmit</button>
+                <button class="offline-secondary" onclick="closeWaypointPanel()">Cancel</button>
+            </div>
+        </div>
+
         <div class="map-overlay-legend" id="mapLegend">
             <span class="legend-dot self"></span><span>You</span>
             <span class="legend-dot peer"></span><span>Node</span>
             <span class="legend-dot stale"></span><span>Stale</span>
-            <span class="legend-dot landmark"></span><span>Landmark</span>
+            <span class="legend-dot waypoint"></span><span>Waypoint</span>
             <span class="legend-dot enemy"></span><span>Enemy</span>
         </div>
         <div class="map-node-count" id="mapNodeCount">0 nodes</div>
-        <div class="map-hint">Double-click map to drop a tac landmark</div>
+        <div class="map-hint">Double-click map to drop and broadcast a tac waypoint</div>
     </div>
 
     <!-- ── Sliding Drawer Text Messaging Panel ── -->

@@ -258,12 +258,22 @@ let map        = null;
 let selfMarker = null;
 const nodeMarkers = {};   // { nodeId: { marker, lat, lon, lastSeen } }
 
-// ─── Tac landmarks ─────────────────────────────────────────────────────────
-const landmarkMarkers = {};
-let landmarks = [];
+// ─── Tac waypoints (formerly "landmarks") ───────────────────────────────────
+const waypointMarkers = {};
+let waypoints = [];
 try {
-    landmarks = JSON.parse(localStorage.getItem('tacLandmarks') || '[]');
-} catch (e) { landmarks = []; }
+    const stored = localStorage.getItem('tacWaypoints');
+    if (stored !== null) {
+        waypoints = JSON.parse(stored);
+    } else {
+        // One-time migration from the old "landmarks" naming/key so existing
+        // saved pins aren't lost when upgrading.
+        waypoints = JSON.parse(localStorage.getItem('tacLandmarks') || '[]');
+        if (waypoints.length) {
+            try { localStorage.setItem('tacWaypoints', JSON.stringify(waypoints)); } catch (e) {}
+        }
+    }
+} catch (e) { waypoints = []; }
 
 // ─── UTM grid overlay ──────────────────────────────────────────────────────
 let gridLinesLayer  = null;
@@ -337,12 +347,12 @@ function initMap() {
     gridLabelsLayer = L.layerGroup().addTo(map);
 
     map.on('dblclick', e => {
-        const label = window.prompt('Landmark label:', '');
+        const label = window.prompt('Waypoint label:', '');
         if (label === null) return;
-        addLandmark(e.latlng.lat, e.latlng.lng, label.trim() || 'LANDMARK');
+        addWaypoint(e.latlng.lat, e.latlng.lng, label.trim() || 'WAYPOINT');
     });
 
-    landmarks.forEach(lm => renderLandmark(lm));
+    waypoints.forEach(wp => renderWaypoint(wp));
 
     map.on('moveend zoomend', scheduleGridRedraw);
     map.whenReady(() => drawUTMGrid());
@@ -429,37 +439,52 @@ function drawUTMGrid() {
     }
 }
 
-function addLandmark(lat, lon, label) {
-    const lm = { id: 'lm_' + Date.now(), lat, lon, label };
-    landmarks.push(lm);
-    persistLandmarks();
-    renderLandmark(lm);
+// Adding a waypoint always transmits it over the active link (mirrors enemy
+// contact reporting) so every node on the mesh sees it. Pass
+// { fromRemote: true } when rendering a waypoint that arrived over the
+// mesh from another node, so we don't re-transmit it back out.
+function addWaypoint(lat, lon, label, opts = {}) {
+    const wp = { id: opts.id || ('wp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)), lat, lon, label };
+    waypoints.push(wp);
+    persistWaypoints();
+    renderWaypoint(wp);
+    if (!opts.fromRemote) {
+        transmitWaypoint(label, lat, lon);
+    }
+    return wp;
 }
 
-function removeLandmark(id) {
-    landmarks = landmarks.filter(l => l.id !== id);
-    persistLandmarks();
-    if (landmarkMarkers[id]) {
-        map.removeLayer(landmarkMarkers[id]);
-        delete landmarkMarkers[id];
+function removeWaypoint(id) {
+    waypoints = waypoints.filter(w => w.id !== id);
+    persistWaypoints();
+    if (waypointMarkers[id]) {
+        map.removeLayer(waypointMarkers[id]);
+        delete waypointMarkers[id];
     }
 }
 
-function persistLandmarks() {
-    try { localStorage.setItem('tacLandmarks', JSON.stringify(landmarks)); } catch (e) {}
+function persistWaypoints() {
+    try { localStorage.setItem('tacWaypoints', JSON.stringify(waypoints)); } catch (e) {}
 }
 
-function renderLandmark(lm) {
-    const marker = L.marker([lm.lat, lm.lon], { icon: getNodeIcon('landmark') })
-        .bindTooltip(nodeTooltipHtml(lm.label, lm.lat, lm.lon), { permanent: true, direction: 'top', offset: [0, -6], className: 'node-name-tooltip' })
+function renderWaypoint(wp) {
+    const marker = L.marker([wp.lat, wp.lon], { icon: getNodeIcon('waypoint') })
+        .bindTooltip(nodeTooltipHtml(wp.label, wp.lat, wp.lon), { permanent: true, direction: 'top', offset: [0, -6], className: 'node-name-tooltip' })
         .bindPopup(`
-            <div class="popup-node-id">${lm.label}</div>
-            <div class="popup-coords">${lm.lat.toFixed(5)}, ${lm.lon.toFixed(5)}</div>
-            <div class="grid-ref-row">GR ${formatGridRef(lm.lat, lm.lon)}</div>
-            <button onclick="removeLandmark('${lm.id}')" style="margin-top:6px;font-size:10px;cursor:pointer;">Remove</button>
+            <div class="popup-node-id">${wp.label}</div>
+            <div class="popup-coords">${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)}</div>
+            <div class="grid-ref-row">GR ${formatGridRef(wp.lat, wp.lon)}</div>
+            <button onclick="removeWaypoint('${wp.id}')" style="margin-top:6px;font-size:10px;cursor:pointer;">Remove</button>
         `)
         .addTo(map);
-    landmarkMarkers[lm.id] = marker;
+    waypointMarkers[wp.id] = marker;
+}
+
+function transmitWaypoint(label, lat, lon) {
+    const safeLabel = (label || 'WAYPOINT').replace(/[|:]/g, ' ').slice(0, 40);
+    const payload = `WAYPOINTSPOT:${safeLabel}|${lat.toFixed(6)}|${lon.toFixed(6)}`;
+    transportWrite(payload).catch(e => console.error('Waypoint broadcast failed:', e));
+    insertAlert(`🔵 WAYPOINT transmitted: ${safeLabel} @ ${lat.toFixed(5)}, ${lon.toFixed(5)} (GR ${formatGridRef(lat, lon)})`);
 }
 
 // ─── Enemy contact reporting ────────────────────────────────────────────────
@@ -566,19 +591,46 @@ function submitEnemyReport() {
     document.getElementById('enemyLon').value = '';
 }
 
+// Enemy contacts can't be removed the instant they're reported — a wrong
+// tap shouldn't erase a live contact. The Remove button only appears in the
+// popup once STALE_THRESHOLD_MS (5 minutes) has passed since the report.
+function enemyPopupHtml(id, name, lat, lon, ts) {
+    const remainingMs = STALE_THRESHOLD_MS - (Date.now() - ts);
+    const removalRow = remainingMs <= 0
+        ? `<button onclick="removeEnemyMarker('${id}')" style="margin-top:6px;font-size:10px;cursor:pointer;">Remove</button>`
+        : `<div class="popup-lastseen">Removable in ${Math.max(1, Math.ceil(remainingMs / 60000))}m</div>`;
+    return `
+        <div class="popup-node-id" style="color:var(--node-enemy);">⚠ ${name}</div>
+        <div class="popup-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>
+        <div class="grid-ref-row">GR ${formatGridRef(lat, lon)}</div>
+        <div class="popup-lastseen">Reported: ${formatLastSeen(ts)}</div>
+        ${removalRow}
+    `;
+}
+
 function plotEnemyMarker(name, lat, lon, ts) {
     const id = 'en_' + ts + '_' + Math.random().toString(36).slice(2, 6);
     const marker = L.marker([lat, lon], { icon: getNodeIcon('enemy'), zIndexOffset: 900 })
         .bindTooltip(nodeTooltipHtml(name, lat, lon), { permanent: true, direction: 'top', offset: [0, -8], className: 'node-name-tooltip enemy-tooltip' })
-        .bindPopup(`
-            <div class="popup-node-id" style="color:var(--node-enemy);">⚠ ${name}</div>
-            <div class="popup-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>
-            <div class="grid-ref-row">GR ${formatGridRef(lat, lon)}</div>
-            <div class="popup-lastseen">Reported: ${formatLastSeen(ts)}</div>
-        `)
+        .bindPopup(enemyPopupHtml(id, name, lat, lon, ts))
         .addTo(map);
-    enemyMarkers[id] = marker;
+    // Recompute the popup (so "Removable in Xm" counts down / the Remove
+    // button appears once eligible) every time it's opened, rather than
+    // running a global timer for markers nobody is looking at.
+    marker.on('popupopen', () => marker.setPopupContent(enemyPopupHtml(id, name, lat, lon, ts)));
+    enemyMarkers[id] = { marker, name, lat, lon, ts };
     return id;
+}
+
+function removeEnemyMarker(id) {
+    const rec = enemyMarkers[id];
+    if (!rec) return;
+    if (Date.now() - rec.ts < STALE_THRESHOLD_MS) {
+        insertAlert('SYSTEM: Enemy contacts can only be removed 5 minutes after they were reported.');
+        return;
+    }
+    map.removeLayer(rec.marker);
+    delete enemyMarkers[id];
 }
 
 function transmitEnemyReport(name, lat, lon) {
@@ -586,6 +638,88 @@ function transmitEnemyReport(name, lat, lon) {
     const payload = `ENEMYSPOT:${safeName}|${lat.toFixed(6)}|${lon.toFixed(6)}`;
     transportWrite(payload).catch(e => console.error('Enemy report send failed:', e));
     insertAlert(`🔴 ENEMY CONTACT transmitted: ${safeName} @ ${lat.toFixed(5)}, ${lon.toFixed(5)} (GR ${formatGridRef(lat, lon)})`);
+}
+
+// ─── Waypoint broadcast panel (precise bearing/grid/lat-long entry) ────────
+// Same three input methods as the enemy contact panel. Submitting here goes
+// through addWaypoint(), which both plots the pin locally and transmits it
+// over the mesh so every node sees it — the double-click quick-add on the
+// map does the same.
+let waypointMethod = 'bearing';
+
+function openWaypointPanel() {
+    document.getElementById('waypointPanel').classList.add('open');
+    setWaypointMethod('bearing');
+}
+
+function closeWaypointPanel() {
+    document.getElementById('waypointPanel').classList.remove('open');
+}
+
+function setWaypointMethod(method) {
+    waypointMethod = method;
+    document.querySelectorAll('#waypointPanel .enemy-method-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.method === method);
+    });
+    document.getElementById('wpMethodBearing').style.display  = method === 'bearing'  ? 'block' : 'none';
+    document.getElementById('wpMethodGrid').style.display     = method === 'grid'     ? 'block' : 'none';
+    document.getElementById('wpMethodLatLong').style.display  = method === 'latlong'  ? 'block' : 'none';
+}
+
+function submitWaypointReport() {
+    const label = (document.getElementById('waypointName').value || '').trim() || 'WAYPOINT';
+    let lat, lon;
+
+    if (waypointMethod === 'bearing') {
+        if (!selfLatLon) {
+            insertAlert('SYSTEM: No GPS fix yet — bearing & range needs your own position first.');
+            return;
+        }
+        const bearing = parseFloat(document.getElementById('waypointBearing').value);
+        const range   = parseFloat(document.getElementById('waypointRange').value);
+        if (isNaN(bearing) || isNaN(range) || bearing < 0 || bearing > 360 || range < 0) {
+            insertAlert('SYSTEM: Enter a valid bearing (0–360°) and range (m).');
+            return;
+        }
+        [lat, lon] = destinationPoint(selfLatLon.lat, selfLatLon.lon, bearing, range);
+
+    } else if (waypointMethod === 'grid') {
+        const zoneStr = (document.getElementById('waypointZone').value || '').trim().toUpperCase();
+        const m = zoneStr.match(/^(\d{1,2})\s*([A-Z])$/);
+        if (!m) {
+            insertAlert('SYSTEM: Enter grid zone like "43R".');
+            return;
+        }
+        const easting  = parseFloat(document.getElementById('waypointEasting').value);
+        const northing = parseFloat(document.getElementById('waypointNorthing').value);
+        if (isNaN(easting) || isNaN(northing)) {
+            insertAlert('SYSTEM: Enter valid easting/northing (m).');
+            return;
+        }
+        const zone = parseInt(m[1], 10);
+        const hemisphere = bandHemisphere(m[2]);
+        [lat, lon] = utmToLatLon(zone, easting, northing, hemisphere);
+
+    } else {
+        lat = parseFloat(document.getElementById('waypointLat').value);
+        lon = parseFloat(document.getElementById('waypointLon').value);
+        if (isNaN(lat) || isNaN(lon)) {
+            insertAlert('SYSTEM: Enter valid latitude and longitude.');
+            return;
+        }
+    }
+
+    addWaypoint(lat, lon, label);
+    closeWaypointPanel();
+
+    document.getElementById('waypointName').value = '';
+    document.getElementById('waypointBearing').value = '';
+    document.getElementById('waypointRange').value = '';
+    document.getElementById('waypointZone').value = '';
+    document.getElementById('waypointEasting').value = '';
+    document.getElementById('waypointNorthing').value = '';
+    document.getElementById('waypointLat').value = '';
+    document.getElementById('waypointLon').value = '';
 }
 
 // ─── Offline map preload ────────────────────────────────────────────────────
@@ -881,7 +1015,7 @@ function restoreDayNightPref() {
 
 /**
  * Creates color-coded map icons for Leaflet using custom-dot-icon CSS class
- * @param {'self'|'peer'|'stale'|'landmark'|'enemy'} type 
+ * @param {'self'|'peer'|'stale'|'waypoint'|'enemy'} type 
  */
 function getNodeIcon(type) {
     return L.divIcon({
@@ -1322,6 +1456,21 @@ function processIncomingLine(raw) {
             if (!isNaN(lat) && !isNaN(lon)) {
                 selfLatLon = { lat, lon };
                 updateNodeOnMap(selfNodeId, lat, lon);
+            }
+        }
+        return;
+    }
+
+    if (raw.startsWith('WAYPOINT:')) {
+        const parts = raw.slice('WAYPOINT:'.length).split('|');
+        if (parts.length === 3) {
+            const [label, latStr, lonStr] = parts;
+            const lat = parseFloat(latStr);
+            const lon = parseFloat(lonStr);
+            if (!isNaN(lat) && !isNaN(lon)) {
+                const cleanLabel = label.trim() || 'WAYPOINT';
+                addWaypoint(lat, lon, cleanLabel, { fromRemote: true });
+                insertAlert(`🔵 Waypoint received: ${cleanLabel} @ ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
             }
         }
         return;
