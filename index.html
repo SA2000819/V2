@@ -202,7 +202,9 @@
         </main>
 
         <footer class="chat-input-area">
-            <input type="text" id="targetId" placeholder="Target" maxlength="4" disabled>
+            <select id="targetId" disabled title="Broadcast (all) or a specific node">
+                <option value="FFFF">📡 Broadcast (All)</option>
+            </select>
             <div class="input-wrapper">
                 <input type="text" id="messageInput" placeholder="Type a message..." disabled>
             </div>

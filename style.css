@@ -64,13 +64,14 @@
     box-shadow: 0 0 4px var(--node-enemy);
 }
 
-/* Custom Map Marker Dot Styles */
-.leaflet-marker-icon.node-dot-marker {
+/* Custom Map Marker Dot Styles — must match the classes getNodeIcon() in
+   app.js actually generates ('custom-dot-icon' wrapper, 'marker-pin' dot) */
+.leaflet-marker-icon.custom-dot-icon {
     background: transparent;
     border: none;
 }
 
-.marker-dot-inner {
+.marker-pin {
     width: 12px;
     height: 12px;
     border-radius: 50%;
@@ -78,11 +79,11 @@
     box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
 }
 
-.marker-dot-inner.self     { background-color: var(--node-self); }
-.marker-dot-inner.peer     { background-color: var(--node-peer); }
-.marker-dot-inner.stale    { background-color: var(--node-stale); }
-.marker-dot-inner.landmark { background-color: var(--node-landmark); }
-.marker-dot-inner.enemy    { background-color: var(--node-enemy); }
+.marker-pin.self     { background-color: var(--node-self); }
+.marker-pin.peer     { background-color: var(--node-peer); }
+.marker-pin.stale    { background-color: var(--node-stale); }
+.marker-pin.landmark { background-color: var(--node-landmark); }
+.marker-pin.enemy    { background-color: var(--node-enemy); }
 
 /* --- Theme variables: DAY MODE --- */
 body.day-mode {
@@ -328,12 +329,18 @@ body {
 .received .bubble { background-color: var(--bg-bubble-recv); }
 .sender-id { font-size: 10px; font-weight: bold; color: var(--accent-blue); display: block; margin-bottom: 2px; }
 
-/* Chat delivery-status indicator (broadcast/directed ack tracking) */
-.bubble.clickable { cursor: pointer; }
-.delivery-status { display: block; font-size: 10px; margin-top: 3px; opacity: 0.75; }
-.delivery-status.pending   { color: var(--text-dim); }
-.delivery-status.delivered { color: #22c55e; }
-.delivery-status.partial   { color: var(--accent-stale); }
+/* Sent-message delivery status (broadcast / pending / delivered / failed) */
+.msg-row.sent { flex-direction: column; align-items: flex-end; }
+.msg-row.sent.clickable .bubble { cursor: pointer; }
+.msg-status-icon { display: inline-block; margin-left: 6px; font-size: 11px; vertical-align: middle; }
+.msg-status-line {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 2px;
+    padding: 2px 8px;
+}
+.msg-status-line.delivered { color: var(--accent, #4caf50); }
+.msg-status-line.failed { color: var(--node-enemy, #e05252); }
 
 .system-message { display: flex; justify-content: center; margin: 6px 0; }
 .system-message span {
@@ -354,13 +361,14 @@ body {
 }
 
 #targetId {
-    width: 60px;
+    max-width: 128px;
     background-color: var(--bg-input);
     border: 1px solid var(--border-color);
     border-radius: 6px;
     color: var(--text-main);
     text-align: center;
     font-weight: bold;
+    padding: 0 4px;
 }
 
 .input-wrapper { flex: 1; }

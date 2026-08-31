@@ -12,20 +12,6 @@ let bluetoothDevice  = null;
 let selfNodeId        = null;
 let selfLatLon         = null; // { lat, lon } — last known own position
 
-// ─── Known network roster (drives the target dropdown) ──────────────────────
-// Populated from the firmware's "NODES:BRA1,MID1,..." messages, which are
-// pushed whenever the route table changes and once on connect.
-let knownNodes = new Set();
-
-// ─── Chat delivery-status tracking ───────────────────────────────────────────
-// pendingSentBubbles: FIFO of bubbles created by sendMessage() awaiting a
-// "CHATSENT:<counter>|<roster>" line from the firmware to tell us which
-// counter they correspond to (sends are strictly serialized through the
-// firmware's single-slot TX queue, so FIFO order is reliable correlation).
-// deliveryStatus: counter (string) -> { el, expected: Set, acked: Set, failed: Set, done: bool }
-let pendingSentBubbles = [];
-let deliveryStatus = new Map();
-
 // ─── Active transport state ────────────────────────────────────────────────
 // 'ble' | 'wifi' | 'serial' | null — set by the transport picker before Connect
 let activeTransport = null;
@@ -43,6 +29,20 @@ let writeQueue = Promise.resolve();
 // Unread message tracking state
 let unreadCount = 0;
 let isChatOpen = false;
+
+// Directed (non-broadcast) chat messages awaiting a CHATOK/CHATFAIL reply.
+// The firmware only tracks one outstanding ack at a time, so in practice
+// this stays short — but a small FIFO queue per target keeps it correct
+// even if a couple of sends land close together.
+let pendingDirectedMsgs = [];
+
+function resolvePendingDirected(node, status) {
+    const idx = pendingDirectedMsgs.findIndex(m => m.target === node);
+    if (idx === -1) return;
+    const [msg] = pendingDirectedMsgs.splice(idx, 1);
+    msg.el.dataset.status = status;
+    updateMsgStatusLine(msg.el);
+}
 
 function toggleChatDrawer() {
     const drawer = document.getElementById('chatDrawer');
@@ -67,12 +67,13 @@ function updateUnreadBadge() {
 
 // Intercept incoming bubbles to update the unread badge if drawer is closed
 const originalInsertBubble = insertBubble;
-insertBubble = function(direction, sender, text) {
-    originalInsertBubble(direction, sender, text);
+insertBubble = function(direction, sender, text, meta) {
+    const el = originalInsertBubble(direction, sender, text, meta);
     if (!isChatOpen && direction === 'received') {
         unreadCount++;
         updateUnreadBadge();
     }
+    return el;
 };
 
 // Ensure map recalculates size when window or orientation changes
@@ -936,6 +937,7 @@ function updateNodeOnMap(nodeId, lat, lon) {
                 .bindTooltip(nodeTooltipHtml(nodeId, lat, lon), { permanent: true, direction: 'top', offset: [0, -7], className: 'node-name-tooltip' })
                 .addTo(map);
             nodeMarkers[nodeId] = { marker, lat, lon, lastSeen: now };
+            refreshTargetDropdown();
         } else {
             nodeMarkers[nodeId].marker.setLatLng([lat, lon]);
             nodeMarkers[nodeId].marker.setIcon(getNodeIcon('peer'));
@@ -958,6 +960,23 @@ function refreshStaleMarkers() {
         info.marker.setTooltipContent(nodeTooltipHtml(stale ? `${nodeId} · STALE` : nodeId, info.lat, info.lon));
         info.marker.setPopupContent(popupHtml(nodeId, info.lat, info.lon, info.lastSeen));
     }
+}
+
+// Rebuilds the "Target" dropdown: Broadcast (All) plus every node currently
+// known on the map (i.e. every peer we've heard a GPS beacon from). Keeps
+// the user's current selection if that node is still known, otherwise
+// falls back to Broadcast.
+function refreshTargetDropdown() {
+    if (!targetInput || targetInput.tagName !== 'SELECT') return;
+
+    const prevValue = targetInput.value || 'FFFF';
+    const ids = Object.keys(nodeMarkers).sort();
+
+    targetInput.innerHTML =
+        '<option value="FFFF">📡 Broadcast (All)</option>' +
+        ids.map(id => `<option value="${id}">${id}</option>`).join('');
+
+    targetInput.value = (prevValue === 'FFFF' || ids.includes(prevValue)) ? prevValue : 'FFFF';
 }
 
 function updateNodeCountBadge() {
@@ -1029,74 +1048,77 @@ function insertAlert(text) {
     chatWindow.scrollTop = chatWindow.scrollHeight;
 }
 
-function insertBubble(direction, sender, text) {
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// Icon shown inline in a sent bubble for its current delivery status.
+function statusIcon(status) {
+    switch (status) {
+        case 'broadcast': return '📡';
+        case 'pending':   return '🕓';
+        case 'delivered': return '✅';
+        case 'failed':    return '⚠️';
+        default:          return '';
+    }
+}
+
+// Human-readable line shown when a sent bubble is clicked/tapped.
+function msgStatusText(meta) {
+    if (meta.mode === 'broadcast') {
+        return '📡 Broadcast — sent to all nodes in range (no delivery confirmation)';
+    }
+    if (meta.status === 'delivered') return `✅ Delivered to ${meta.target}`;
+    if (meta.status === 'failed')    return `⚠️ Not delivered to ${meta.target} — no response after retries`;
+    return `🕓 Sending to ${meta.target} — awaiting confirmation…`;
+}
+
+// Refreshes a sent bubble's inline icon + hidden status line from its current
+// dataset (called on send, and again whenever a CHATOK/CHATFAIL arrives).
+function updateMsgStatusLine(el) {
+    const meta = { target: el.dataset.target, mode: el.dataset.mode, status: el.dataset.status };
+    const iconEl = el.querySelector('.msg-status-icon');
+    if (iconEl) iconEl.textContent = statusIcon(meta.status);
+
+    const lineEl = el.querySelector('.msg-status-line');
+    if (lineEl) {
+        lineEl.textContent = msgStatusText(meta);
+        lineEl.className = `msg-status-line ${meta.status}`;
+    }
+}
+
+function toggleMsgStatus(el) {
+    const lineEl = el.querySelector('.msg-status-line');
+    if (lineEl) lineEl.style.display = lineEl.style.display === 'none' ? 'block' : 'none';
+}
+
+// `meta` (sent messages only): { target: '4-char node id or FFFF',
+//   mode: 'broadcast' | 'direct', status: 'broadcast' | 'pending' | 'delivered' | 'failed' }
+// Returns the created row element so the caller can update its status later.
+function insertBubble(direction, sender, text, meta) {
     const el = document.createElement('div');
     el.className = `msg-row ${direction}`;
     const senderTag = direction === 'received' ? `<span class="sender-id">${sender}</span>` : '';
-    const statusTag = direction === 'sent' ? `<span class="delivery-status"></span>` : '';
-    el.innerHTML = `<div class="bubble">${senderTag}${escapeHtml(text)}${statusTag}</div>`;
+
+    if (direction === 'sent' && meta) {
+        el.dataset.target = meta.target;
+        el.dataset.mode = meta.mode;
+        el.dataset.status = meta.status;
+        el.classList.add('clickable');
+        el.innerHTML =
+            `<div class="bubble">${senderTag}${escapeHtml(text)}<span class="msg-status-icon"></span></div>` +
+            `<div class="msg-status-line" style="display:none;"></div>`;
+        el.querySelector('.bubble').addEventListener('click', () => toggleMsgStatus(el));
+        updateMsgStatusLine(el);
+    } else {
+        el.innerHTML = `<div class="bubble">${senderTag}${escapeHtml(text)}</div>`;
+    }
+
     chatWindow.appendChild(el);
     chatWindow.scrollTop = chatWindow.scrollHeight;
     return el;
-}
-
-function escapeHtml(text) {
-    const d = document.createElement('div');
-    d.textContent = text;
-    return d.innerHTML;
-}
-
-// ─── Network roster / target dropdown ────────────────────────────────────────
-function rebuildTargetDropdown() {
-    const previous = targetInput.value || 'FFFF';
-    targetInput.innerHTML = '<option value="FFFF">📢 Broadcast (All)</option>';
-    [...knownNodes].sort().forEach(id => {
-        const opt = document.createElement('option');
-        opt.value = id;
-        opt.textContent = id;
-        targetInput.appendChild(opt);
-    });
-    targetInput.value = (previous === 'FFFF' || knownNodes.has(previous)) ? previous : 'FFFF';
-}
-
-// ─── Chat delivery-status rendering ───────────────────────────────────────────
-function renderDeliveryStatus(entry) {
-    const statusEl = entry.el.querySelector('.delivery-status');
-    if (!statusEl) return;
-
-    const total  = entry.expected.size;
-    const acked  = entry.acked.size;
-    const failed = entry.failed.size;
-
-    if (total === 0) {
-        statusEl.textContent = entry.done ? '✓ Sent' : '⏳ Sending…';
-        statusEl.className = 'delivery-status';
-        return;
-    }
-    if (acked === total) {
-        statusEl.textContent = total === 1 ? '✓ Delivered' : `✓ Delivered (${total}/${total})`;
-        statusEl.className = 'delivery-status delivered';
-    } else if (entry.done) {
-        statusEl.textContent = `⚠ ${acked}/${total} delivered`;
-        statusEl.className = 'delivery-status partial';
-    } else {
-        statusEl.textContent = `⏳ ${acked}/${total} delivered`;
-        statusEl.className = 'delivery-status pending';
-    }
-}
-
-function showDeliveryDetail(entry) {
-    if (entry.expected.size === 0) {
-        insertAlert(entry.acked.size > 0
-            ? `Delivered to: ${[...entry.acked].sort().join(', ')}`
-            : 'No nodes were known on the network yet when this was sent.');
-        return;
-    }
-    const lines = [...entry.expected].sort().map(node => {
-        const icon = entry.acked.has(node) ? '✓' : (entry.failed.has(node) || entry.done ? '✗' : '⏳');
-        return `${icon} ${node}`;
-    });
-    insertAlert(`Sent to — ${lines.join('&nbsp;&nbsp;')}`);
 }
 
 function setConnected(online) {
@@ -1107,10 +1129,6 @@ function setConnected(online) {
     sendBtn.disabled      = !online;
     connectBtn.disabled   = online;
     connectBtn.innerText  = online ? 'Online' : 'Connect';
-    if (online) {
-        knownNodes.clear();
-        rebuildTargetDropdown();
-    }
 }
 
 function getSelectedTransport() {
@@ -1323,69 +1341,22 @@ function processIncomingLine(raw) {
         return;
     }
 
-    // Live network roster — repopulates the target dropdown as nodes are
-    // discovered/expire. Must be handled before the generic fallback below.
-    if (raw.startsWith('NODES:')) {
-        const list = raw.slice('NODES:'.length).split(',').map(s => s.trim()).filter(Boolean);
-        const seen = new Set(list);
-        let changed = false;
-        for (const id of list) {
-            if (!knownNodes.has(id)) { knownNodes.add(id); changed = true; }
-        }
-        for (const id of [...knownNodes]) {
-            if (!seen.has(id)) { knownNodes.delete(id); changed = true; }
-        }
-        if (changed) rebuildTargetDropdown();
-        return;
-    }
-
-    // Chat delivery tracking — correlates with the bubble sendMessage() just
-    // created (FIFO order matches firmware TX order, see pendingSentBubbles).
-    if (raw.startsWith('CHATSENT:')) {
-        const [counter, rosterStr] = raw.slice('CHATSENT:'.length).split('|');
-        const roster = (rosterStr || '').split(',').map(s => s.trim()).filter(Boolean);
-        const el = pendingSentBubbles.shift();
-        if (el) {
-            const entry = { el, expected: new Set(roster), acked: new Set(), failed: new Set(), done: false };
-            deliveryStatus.set(counter, entry);
-            renderDeliveryStatus(entry);
-            const bubbleEl = el.querySelector('.bubble');
-            bubbleEl.classList.add('clickable');
-            bubbleEl.addEventListener('click', () => showDeliveryDetail(entry));
-        }
-        return;
-    }
-
-    if (raw.startsWith('CHATACKS:')) {
-        const [counter, rosterStr] = raw.slice('CHATACKS:'.length).split('|');
-        const ackers = (rosterStr || '').split(',').map(s => s.trim()).filter(Boolean);
-        const entry = deliveryStatus.get(counter);
-        if (entry) {
-            ackers.forEach(id => entry.acked.add(id));
-            renderDeliveryStatus(entry);
-        }
+    // Chat delivery confirmation / failure — sent by the firmware once a
+    // directed chat message's ack either arrives or the retry budget runs
+    // out. Must be handled before the generic "sender:text" fallback below,
+    // or these would misrender as a chat bubble from a sender literally
+    // named "CHATOK"/"CHATFAIL".
+    if (raw.startsWith('CHATOK:')) {
+        const node = raw.slice('CHATOK:'.length);
+        insertAlert(`✅ Delivered to ${node}`);
+        resolvePendingDirected(node, 'delivered');
         return;
     }
 
     if (raw.startsWith('CHATFAIL:')) {
-        const [counter, node] = raw.slice('CHATFAIL:'.length).split('|');
-        const entry = deliveryStatus.get(counter);
-        if (entry && node) {
-            entry.failed.add(node);
-            renderDeliveryStatus(entry);
-        } else if (node) {
-            insertAlert(`⚠️ Message to ${node} not delivered — no ack after retries.`);
-        }
-        return;
-    }
-
-    if (raw.startsWith('CHATDONE:')) {
-        const counter = raw.slice('CHATDONE:'.length);
-        const entry = deliveryStatus.get(counter);
-        if (entry) {
-            entry.done = true;
-            renderDeliveryStatus(entry);
-        }
+        const node = raw.slice('CHATFAIL:'.length);
+        insertAlert(`⚠️ Message to ${node} not delivered — no ack after retries.`);
+        resolvePendingDirected(node, 'failed');
         return;
     }
 
@@ -1420,18 +1391,37 @@ function processSerialChunk(chunkText) {
 
 // ─── Send message ─────────────────────────────────────────────────────────────
 async function sendMessage() {
-    const target  = targetInput.value; // dropdown value — "FFFF" (broadcast) or a 4-char node id
+    // targetInput is now a <select>: "FFFF" (Broadcast) or a known 4-char
+    // node id, so this is always well-formed — no more silent no-op from an
+    // empty/incomplete hand-typed target.
+    const target  = (targetInput.value || 'FFFF').toUpperCase();
     const message = messageInput.value;
 
-    if (target.length === 4 && message.length > 0) {
-        try {
-            await transportWrite(`${target}:${message}`);
-            const el = insertBubble('sent', 'You', message);
-            pendingSentBubbles.push(el);
-            messageInput.value = '';
-        } catch (err) {
-            insertAlert('Transmission Fault: ' + err.message);
+    if (message.length === 0) return;
+
+    if (!activeTransport) {
+        insertAlert('⚠️ Not connected — click Connect before sending.');
+        return;
+    }
+
+    const isBroadcast = target === 'FFFF';
+
+    try {
+        await transportWrite(`${target}:${message}`);
+
+        const bubbleEl = insertBubble('sent', 'You', message, {
+            target,
+            mode: isBroadcast ? 'broadcast' : 'direct',
+            status: isBroadcast ? 'broadcast' : 'pending'
+        });
+
+        if (!isBroadcast) {
+            pendingDirectedMsgs.push({ target, el: bubbleEl });
         }
+
+        messageInput.value = '';
+    } catch (err) {
+        insertAlert('Transmission Fault: ' + err.message);
     }
 }
 
